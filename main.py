@@ -149,7 +149,7 @@ def main(_):
   y_conv = deepnn(x, keep_prob, seq_length)
 
   with tf.name_scope('loss'):
-    cross_entropy = tf.nn.softmax_cross_entropy_with_logits(labels=y_, logits=y_conv)
+    cross_entropy = tf.nn.softmax_cross_entropy_with_logits_v2(labels=y_, logits=y_conv)
   cross_entropy = tf.reduce_mean(cross_entropy)
 
   with tf.name_scope('adam_optimizer'):
@@ -161,7 +161,7 @@ def main(_):
   accuracy = tf.reduce_mean(correct_prediction)
 
   # Graph Location for training 
-  graph_location = rootPath + '/graph-cnn-rnn-tensorflow20'
+  graph_location = rootPath + '/graph-cnn-rnn-tensorflow22'
   logger = Logger(graph_location)
 
   init = tf.global_variables_initializer()
@@ -177,8 +177,8 @@ def main(_):
   variance_train = variance_ac_train - median_train * median_train
   std_train = np.sqrt(variance_train)
 
-  N_dev = 2525
-  N_training = 500
+  N_training = 2525
+  N_dev = 500
   num_epochs = 300
   nameFilesDev = getNameFiles('development', N_dev)
   
@@ -189,11 +189,11 @@ def main(_):
   with tf.Session() as sess:
     sess.run(init)
     for epoch in range(num_epochs):
-      print('Epoch {}/{}'.format(epoch, num_epochs - 1))
-      print('-' * 10)
+      #print('Epoch {}/{}'.format(epoch, num_epochs - 1))
+      #print('-' * 10)
       nameFilesTrain = getNameFiles('training', N_training)
       for batch in range(N_training):
-        print('BATCH: ' + str(batch))
+        #print('BATCH: ' + str(batch))
         for i in range(2):
           trainFeatures, trainLabels, seqLengthBatch = getBatchFeatures(nameFilesTrain, batch, classes[i], median_train, std_train, kind_features)
           sess.run(train_step, feed_dict={x: trainFeatures, seq_length: seqLengthBatch, y_: trainLabels})
@@ -202,19 +202,17 @@ def main(_):
       for utterance in range(N_dev):
         for i in range(2):
           devFeatures, devLabels, seqLengthBatch = getBatchFeatures(nameFilesDev, utterance, classes[i], median_train, std_train, kind_features)
-          epochAccuracy, epochCrossEntropy = sess.run([accuracy, cross_entropy], feed_dict={x: trainFeatures, seq_length: seqLengthBatch, y_: trainLabels})
-          #epochAccuracy = accuracy.eval(feed_dict={x: devFeatures, seq_length: seqLengthBatch, y_: devLabels})
-          #epochCrossEntropy = cross_entropy.eval(feed_dict={x: devFeatures, seq_length: seqLengthBatch, y_: devLabels})
-          accuracy_avg = accuracy_avg + epochAccuracy
-          entropy_avg = entropy_avg + epochCrossEntropy
-      accuracy_avg = (1.0 * accuracy_avg)/(N_dev * 6)
-      entropy_avg = (1.0 * entropy_avg)/(N_dev * 6)
-      print("Epoch accuracy: " + str(accuracy_avg))
-      print("Epoch cross entropy: " + str(entropy_avg))
-      logger.log_scalar('Epoch accuracy CNN+RNN Tensorflow 20', accuracy_avg, epoch)
-      logger.log_scalar('Epoch cross entropy CNN+RNN Tensorflow 20', entropy_avg, epoch)
+          epochAccuracy, epochCrossEntropy = sess.run([accuracy, cross_entropy], feed_dict={x: devFeatures, seq_length: seqLengthBatch, y_: devLabels})
+          accuracy_avg += epochAccuracy
+          entropy_avg += epochCrossEntropy
+      accuracy_avg = (1.0 * accuracy_avg)/(N_dev * 2)
+      entropy_avg = (1.0 * entropy_avg)/(N_dev * 2)
+      #print("Epoch accuracy: " + str(accuracy_avg))
+      #print("Epoch cross entropy: " + str(entropy_avg))
+      logger.log_scalar('Epoch accuracy CNN+RNN Tensorflow 22', accuracy_avg, epoch)
+      logger.log_scalar('Epoch cross entropy CNN+RNN Tensorflow 22', entropy_avg, epoch)
       if (accuracy_avg > bestPreviousEpochAccuracy):
-        saver.save(sess, rootPath + '/model-cnn-rnn-tensorflow20/rnn.ckpt')
+        saver.save(sess, rootPath + '/model-cnn-rnn-tensorflow22/rnn.ckpt')
         bestPreviousEpochAccuracy = accuracy_avg
         numEpochsNotImproving = 0
       else:
