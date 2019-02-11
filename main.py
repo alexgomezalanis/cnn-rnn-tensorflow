@@ -20,20 +20,28 @@ from logger import Logger
 
 FLAGS = None
 N_STEPS = 985   # Max num of frames between train and development sets
-rootPath = '/home2/alexgomezalanis/antispoofing-noise/data'
+N_FILTS = 48    # Number of filters considered in each frame
+N_FRAMES = 31   # Number of consecutive frames of a context
+N_CLASSES = 6   # Genuine speech and 5 spoofing attacks of the training set
+N_BATCH = 3     # Number of utterances to process per batch
+N_ITER_BATCH = int(N_CLASSES / N_BATCH) 
+rootPath = os.getcwd()
 
-def deepnn(x, keep_prob, seq_length):
-  """deepnn builds the graph for a deep net for classifying digits.
+def CNN_RNN(x, keep_prob, seq_length):
+  """
+  CNN_RNN builds the graph for a CNN + RNN for classifying the utterance into genuine speech
+  or one of the spoofing attacks present in the training set.
   Args:
-    x: an input tensor with the dimensions (N_examples, 48*31)
+    x: an input tensor with the dimensions (N_utterances, N_STEPS, 1, N_FILTS, N_FRAMES)
+    keep_prob: a scalar placeholder for the probability of dropout.
+    seq_length: Sequence length of each utterance with the dimensions (N_utterances)
   Returns:
-    A tuple (y, keep_prob). y is a tensor of shape (N_examples, 6), with values
-    equal to the logits of classifying the digit into one of 6 classes. keep_prob is a scalar placeholder for the probability of
-    dropout.
+    y is a tensor of shape (N_utterances, 6), with values equal to the logits of
+    classifying the utterance into one of the 6 classes.
   """
 
   with tf.name_scope('reshape'):
-    x_image = tf.reshape(x, [-1, 48, 31, 1])
+    x_image = tf.reshape(x, [-1, N_FILTS, N_FRAMES, 1])
 
   # First convolutional layer - maps one grayscale image to 64 feature maps.
   with tf.name_scope('conv1'):
@@ -62,21 +70,15 @@ def deepnn(x, keep_prob, seq_length):
 
   gru_cell = tf.contrib.rnn.GRUCell(num_units=1920, activation=tf.nn.relu)
 
-  outputs, states = tf.nn.dynamic_rnn(gru_cell, h_pool2_flat, dtype=tf.float32, sequence_length=seq_length)
-
-  #layers = [tf.contrib.rnn.GRUCell(num_units=1920, activation=tf.nn.relu) for layer in range(1)]
-
-  #multi_layer_cell = tf.contrib.rnn.MultiRNNCell(layers)
-
-  #outputs, states = tf.nn.dynamic_rnn(multi_layer_cell, h_pool2_flat, dtype=tf.float32, sequence_length=seq_length)
+  _, states = tf.nn.dynamic_rnn(gru_cell, h_pool2_flat, dtype=tf.float32, sequence_length=seq_length)
 
   with tf.name_scope('fc3'):
-    W_fc3 = weight_variable([1920, 6])
-    b_fc3 = bias_variable([6])
+    W_fc3 = weight_variable([1920, N_CLASSES])
+    b_fc3 = bias_variable([N_CLASSES])
 
-    y_rnn = tf.matmul(states, W_fc3) + b_fc3
+    y = tf.matmul(states, W_fc3) + b_fc3
 
-  return y_rnn
+  return y
 
 def conv2d(x, W):
   """conv2d returns a 2d convolution layer with full stride."""
@@ -97,39 +99,41 @@ def bias_variable(shape):
   return tf.Variable(initial)
 
 def getNameFiles(kind, N):
-  nameFiles = np.empty((6, N), dtype=object)
-  for i in range(6):
+  nameFiles = np.empty((N_CLASSES, N), dtype=object)
+  for i in range(N_CLASSES):
     fileNames = glob.glob(kind + '/S' + str(i) + '/*.npy')
     shuffle_index = np.random.permutation(len(fileNames))
     fileNames = np.asarray(fileNames)
     fileNames = fileNames[shuffle_index]
     fileNames = fileNames[:N]
-    for j, m in np.ndenumerate(fileNames):
+    for j, _ in np.ndenumerate(fileNames):
       nameFiles[i,j] = fileNames[j]
   return nameFiles
 
-def getBatchFeatures(nameFiles, batch, classes, median, std):
-  dataFeatures = np.zeros((3, N_STEPS, 1, 48, 31), dtype=np.float32) # [batch, seq_length, channels, height, width]
-  dataLabels = np.zeros((3,6), dtype=np.int32)
-  seqLengthBatch = np.zeros((3), dtype=np.int32)
-  count = 0
-  for i in classes:
-    dataLabels[count, i] = 1
-    feat = np.transpose(np.load(nameFiles[i, batch]))
+def getBatchFeatures(nameFiles, batch, median, std):
+  dataFeatures = np.zeros((N_CLASSES, N_STEPS, 1, N_FILTS, N_FRAMES), dtype=np.float32) # [batch, seq_length, channels, N_FILTS, N_FRAMES]
+  dataLabels = np.zeros((N_CLASSES, N_CLASSES), dtype=np.int32)
+  seqLength = np.zeros((N_CLASSES), dtype=np.int32)
+  for n in range(N_CLASSES):
+    dataLabels[n, n] = 1
+    feat = np.transpose(np.load(nameFiles[n, batch]))
     numFrames = len(feat[0])
-    seqLengthBatch[count] = numFrames
+    seqLength[n] = numFrames
     for frame in range(numFrames):
-      feat[:,frame] = (feat[:,frame] - median) / std
-    for frame in range(seqLengthBatch[count] - 30):
-      dataFeatures[count, frame, 0, :, :] = feat[:, frame:frame + 31]
-    count += 1
-  return dataFeatures, dataLabels, seqLengthBatch
+      feat[:, frame] = (feat[:, frame] - median) / std
+    for frame in range(numFrames - N_FRAMES - 1):
+      dataFeatures[n, frame, 0, :, :] = feat[:, frame:frame + N_FRAMES]
+  shuffle_index = np.random.permutation(N_CLASSES)
+  dataLabels = dataLabels[shuffle_index]
+  seqLength = seqLength[shuffle_index]
+  dataFeatures = dataFeatures[shuffle_index, :, :, :, :]
+  return dataFeatures, dataLabels, seqLength
 
 def main(_):
-  kind_features = sys.argv[1]   # mfcc-features-htk-48, cqcc-features-48, fbank-features-htk-48
+  kind_features = sys.argv[1] # fbank, mfcc, cqcc
 
   # Create the model
-  x = tf.placeholder(tf.float32, [3, None, 1, 48, 31])
+  x = tf.placeholder(tf.float32, [3, None, 1, N_FILTS, N_FRAMES])
 
   # Length of the utterance (Number of frames)
   seq_length = tf.placeholder(tf.int32, [3])
@@ -138,17 +142,17 @@ def main(_):
   keep_prob = tf.placeholder(tf.float32)
 
   # Define loss and optimizer
-  y_ = tf.placeholder(tf.float32, [3, 6])
+  y_ = tf.placeholder(tf.float32, [3, N_CLASSES])
 
   # Build the graph for the deep net
-  y_conv = deepnn(x, keep_prob, seq_length)
+  y_conv = CNN_RNN(x, keep_prob, seq_length)
 
   with tf.name_scope('loss'):
     cross_entropy = tf.nn.softmax_cross_entropy_with_logits_v2(labels=y_, logits=y_conv)
   cross_entropy = tf.reduce_mean(cross_entropy)
 
   with tf.name_scope('adam_optimizer'):
-    train_step = tf.train.AdamOptimizer(1e-3).minimize(cross_entropy)
+    train_step = tf.train.AdamOptimizer(3e-4).minimize(cross_entropy)
 
   with tf.name_scope('accuracy'):
     correct_prediction = tf.equal(tf.argmax(y_conv, 1), tf.argmax(y_, 1))
@@ -156,7 +160,7 @@ def main(_):
   accuracy = tf.reduce_mean(correct_prediction)
 
   # Graph Location for training 
-  graph_location = rootPath + '/graph-cnn-rnn-tensorflow21'
+  graph_location = rootPath + '/graph-cnn-rnn-tensorflow'
   logger = Logger(graph_location)
 
   init = tf.global_variables_initializer()
@@ -172,48 +176,57 @@ def main(_):
   variance_train = variance_ac_train - median_train * median_train
   std_train = np.sqrt(variance_train)
 
-  N_training = 2525
-  N_dev = 500
+  N_training = 2525   # Number of utterances per class considered for training
+  N_dev = 500         # Number of utterances per class considered for development
   num_epochs = 300
   nameFilesDev = getNameFiles('development', N_dev)
   
   bestPreviousEpochAccuracy = 0
   numEpochsNotImproving = 0
-  classes = [[0,1,2], [3,4,5]]
 
   with tf.Session() as sess:
     sess.run(init)
     for epoch in range(num_epochs):
-      #print('Epoch {}/{}'.format(epoch, num_epochs - 1))
-      #print('-' * 10)
+      print('Epoch {}/{}'.format(epoch, num_epochs - 1))
+      print('-' * 10)
       nameFilesTrain = getNameFiles('training', N_training)
       for batch in range(N_training):
-        #print('BATCH: ' + str(batch))
-        for i in range(2):
-          trainFeatures, trainLabels, seqLengthBatch = getBatchFeatures(nameFilesTrain, batch, classes[i], median_train, std_train)
-          sess.run(train_step, feed_dict={x: trainFeatures, seq_length: seqLengthBatch, y_: trainLabels})
+        trainFeaturesBatch, trainLabelsBatch, seqLengthBatch = getBatchFeatures(nameFilesTrain, batch, median_train, std_train)
+        for n in range(N_ITER_BATCH):
+          startBatch = N_BATCH * n
+          endBatch = N_BATCH * (n + 1)
+          trainFeatures = trainFeaturesBatch[startBatch : endBatch, :, :, :, :]
+          trainLabels = trainLabelsBatch[startBatch : endBatch]
+          seqLength = seqLengthBatch[startBatch : endBatch]
+          sess.run(train_step, feed_dict={x: trainFeatures, seq_length: seqLength, y_: trainLabels})
       accuracy_avg = 0
       entropy_avg = 0
       for utterance in range(N_dev):
-        for i in range(2):
-          devFeatures, devLabels, seqLengthBatch = getBatchFeatures(nameFilesDev, utterance, classes[i], median_train, std_train)
-          epochAccuracy, epochCrossEntropy = sess.run([accuracy, cross_entropy], feed_dict={x: devFeatures, seq_length: seqLengthBatch, y_: devLabels})
+        devFeaturesBatch, devLabelsBatch, seqLengthBatch = getBatchFeatures(nameFilesDev, utterance, median_train, std_train)
+        for n in range(N_ITER_BATCH):
+          startBatch = N_BATCH * n
+          endBatch = N_BATCH * (n + 1)
+          devFeatures = devFeaturesBatch[startBatch : endBatch, :, :, :, :]
+          devLabels = devLabelsBatch[startBatch : endBatch]
+          seqLength = seqLengthBatch[startBatch : endBatch]
+          epochAccuracy, epochCrossEntropy = sess.run([accuracy, cross_entropy], feed_dict={x: devFeatures, seq_length: seqLength, y_: devLabels})
           accuracy_avg += epochAccuracy
           entropy_avg += epochCrossEntropy
-      accuracy_avg = (1.0 * accuracy_avg)/(N_dev * 2)
-      entropy_avg = (1.0 * entropy_avg)/(N_dev * 2)
-      #print("Epoch accuracy: " + str(accuracy_avg))
-      #print("Epoch cross entropy: " + str(entropy_avg))
-      logger.log_scalar('Epoch accuracy CNN+RNN Tensorflow 21', accuracy_avg, epoch)
-      logger.log_scalar('Epoch cross entropy CNN+RNN Tensorflow 21', entropy_avg, epoch)
+      accuracy_avg = accuracy_avg / (N_dev * N_ITER_BATCH)
+      entropy_avg = entropy_avg / (N_dev * N_ITER_BATCH)
+      print("Epoch accuracy: " + str(accuracy_avg))
+      print("Epoch cross entropy: " + str(entropy_avg))
+      logger.log_scalar('Epoch accuracy CNN + RNN Tensorflow', accuracy_avg, epoch)
+      logger.log_scalar('Epoch cross entropy CNN + RNN Tensorflow', entropy_avg, epoch)
+      saver.save(sess, rootPath + '/model-cnn-rnn-tensorflow/epoch-' + str(epoch) + '.ckpt')
       if (accuracy_avg > bestPreviousEpochAccuracy):
-        saver.save(sess, rootPath + '/model-cnn-rnn-tensorflow21/rnn.ckpt')
+        saver.save(sess, rootPath + '/model-cnn-rnn-tensorflow/best.ckpt')
         bestPreviousEpochAccuracy = accuracy_avg
         numEpochsNotImproving = 0
       else:
-        numEpochsNotImproving = numEpochsNotImproving + 1
+        numEpochsNotImproving += 1
         if (numEpochsNotImproving > 10):
-          break
+          sys.exit()
 
 if __name__ == '__main__':
   tf.app.run(main=main)
